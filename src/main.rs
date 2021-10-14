@@ -1,60 +1,125 @@
+#![feature(int_abs_diff)]
+
 use std::iter::Iterator;
 use std::error::Error;
 use std::collections::HashMap;
 
 use regex::Regex;
+use bmp::{Image, Pixel};
 
 mod file_analysis;
+mod fltk_wrapper;
+use fltk::{prelude::*, *};
 
 fn main() {
-    println!("Hello, world!");
+    let save = "2200.01.01";
 
-    // let id_reg =    Regex::new(r#"^\t\tname="([A-z\s]+)"$|^[\t]([0-9]+)=\{$|^\t}$"#).unwrap();
-    // let test = "},\t},\t50={,\t\tname=\"thius name\"".to_owned();
-    // for i in test.split(',') {
-    //     println!("oh: {:?}", id_reg.captures(&i));
-    // }
-    // panic!();
+    let data = Galaxy::new(&mut file_analysis::analyse(save).unwrap()).unwrap();
+    let world = World::new(&data);
 
-
-    // id_reg.captures(&a).unwrap().get(2).map_or(0, |m| { println!("herte: {:?}", m); m.as_str().parse::<usize>().unwrap()})
-
-    let mut stuff = file_analysis::analyse("2200.01.01").unwrap();
-
-    let mut save = Saves::new();
-
-    save.push(&mut stuff).unwrap();
+    fltk_wrapper::test(&world);
 
 }
 
 
-struct Saves {
-    saves: Vec<Galaxy>,
-    _endgamecrisis: Option<Crisis>
+
+/// Contains all stuff
+#[derive(Debug, Clone)]
+pub struct World {
+    date: usize,
+    systems: Vec<(Star, Vec<usize>)>,
 }
 
-impl Saves {
-    fn new() -> Saves {
-        let ret = Saves {
-            saves: Vec::new(),
-            _endgamecrisis: None
-        };
-        ret
-    }
-    fn push(&mut self, data: &mut impl Iterator<Item = String>) -> Result<(), Box::<dyn Error>> {
-        Ok(self.saves.push(Galaxy::new(data)?))
+impl World {
+    fn new(inp: &Galaxy) -> World {
+        let mut systems = Vec::new();
+        for i in inp.systems.iter().flatten() {
+            systems.push(Star::new(&inp.bodies, i));
+        }
+        World {
+            date: inp.time.unwrap(),
+            systems
+        }
     }
 }
 
-enum Crisis {
-    _Placeholder,
+#[derive(Debug, Clone)]
+struct Star {
+    id: usize,
+    name: String,
+    planets: Vec<Planet>,
+    coordinate: (f64, f64)
 }
+
+impl Star {
+    fn new(bodies: &Option<Vec<Bodies>>, system: &System) -> (Star, Vec<usize>) {
+        (Star {
+            id:         system.id.clone().unwrap_or(0),
+            name:       system.name.clone().unwrap_or(String::new()),
+            coordinate: system.coordinate.clone().unwrap_or((0.0, 0.0)),
+            planets:    bodies.iter().flatten().filter(|x| x.system == system.id).map(|x| Planet::new(x)).collect()
+        }, {
+            match &system.hyperlanes {
+                Some(a) => a.clone(),
+                None => Vec::new()
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Planet {
+    id: usize,
+    name: String,
+    coordinate: (f64, f64),
+    typ: BodyType,
+}
+
+impl Planet {
+    fn new(inp: &Bodies) -> Planet {
+        Planet {
+            id:         inp.id.clone().unwrap_or(0),
+            name:       inp.name.clone().unwrap_or(String::new()),
+            coordinate: inp.coordinate.unwrap_or((0.0, 0.0)),
+            typ:        inp.planet_type.unwrap_or(BodyType::Placeholder)
+        }
+    }
+}
+
+
+
+
+
+
+// struct Saves {
+//     saves: Vec<Galaxy>,
+//     _endgamecrisis: Option<Crisis>
+// }
+
+// impl Saves {
+//     fn new() -> Saves {
+//         let ret = Saves {
+//             saves: Vec::new(),
+//             _endgamecrisis: None
+//         };
+//         ret
+//     }
+//     fn push(&mut self, data: &mut impl Iterator<Item = String>) -> Result<(), Box::<dyn Error>> {
+//         Ok(self.saves.push(Galaxy::new(data)?))
+//     }
+// }
+
+// enum Crisis {
+//     _Placeholder,
+// }
 
 struct Galaxy {
     time:       Option<usize>,
     species:    Option<HashMap<Species, String>>,
     empires:    Option<Vec<Empire>>,
     systems:    Option<Vec<System>>,
+    bodies:     Option<Vec<Bodies>>,
+    pops:       Option<Vec<(Pop, usize)>>,
     deposits:   Option<Vec<Deposit>>,
     version:    Option<[usize; 3],>
 }
@@ -68,6 +133,8 @@ impl Galaxy {
             species:    None,
             empires:    None,
             systems:    None,
+            bodies:     None,
+            pops:       None,
             deposits:   None,
             version:    None
         };
@@ -102,8 +169,6 @@ impl Galaxy {
             }
         }
 
-        let mut pops: Vec<(Pop, usize)> = Vec::new();
-        let mut bodies: Vec<Bodies> = Vec::new();
 
 
 
@@ -114,14 +179,14 @@ impl Galaxy {
                     ret.render_species(data)?
                 }
                 "pop={" => {
-                    ret.render_pops(data, &mut pops)?
+                    ret.render_pops(data)?
                 }
                 "galactic_object={" => {
                     ret.render_stars(data)?
                 }
                 "planets={" => {
                     data.next();
-                    ret.render_bodies(data, &mut bodies)?
+                    ret.render_bodies(data)?
                 }
                 "country={" => {
                     ret.render_empires(data)?
@@ -151,24 +216,20 @@ impl Galaxy {
             temp = self.empires.get_or_insert(Vec::new());
             temp.push(a);
         }
-        if let Some(a) = &self.empires {
-            for i in a.iter() {
-                println!("{:?}", i);
-            }
-        }
+        // if let Some(a) = &self.empires {
+        //     for i in a.iter() {
+        //         println!("{:?}", i);
+        //     }
+        // }
         // todo!();
         Ok(())
     }
-    fn render_bodies(&self, data: &mut impl Iterator<Item = String>, bodies: &mut Vec<Bodies>) -> Result<(), Box<dyn Error>> {
+    fn render_bodies(&mut self, data: &mut impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         // println!("yo");
+        let mut temp;
         while let Some(a) = Bodies::new(data)? {
-            // println!("{:?}", a);
-            // if let Some(b) = &a.name {
-            //     if b == "Terra" {
-            //         break;
-            //     }
-            // }
-            bodies.push(a);
+            temp = self.bodies.get_or_insert(Vec::new());
+            temp.push(a);
         }
         Ok(())
     }
@@ -191,13 +252,12 @@ impl Galaxy {
         }
         Ok(())
     }
-    fn render_pops(&self, data: &mut impl Iterator<Item = String>, pops: &mut Vec<(Pop, usize)>) -> Result<(), Box<dyn Error>> {
-        while let Some(a) =  Pop::new(data)? {
-            pops.push(a);
+    fn render_pops(&mut self, data: &mut impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
+        let mut temp;
+        while let Some(a) = Pop::new(data)? {
+            temp = self.pops.get_or_insert(Vec::new());
+            temp.push(a);
         }
-        // for i in pops.iter() {
-        //     println!("{:?}", i);
-        // }
         Ok(())
     }
 }
@@ -288,6 +348,7 @@ struct System {
     bodies:     Option<Vec<usize>>,
     class:      Option<StarType>,
     coordinate: Option<(f64, f64)>,
+    hyperlanes: Option<Vec<usize>>
 }
 
 impl System {
@@ -297,9 +358,10 @@ impl System {
             bodies:     None,
             class:      None,
             coordinate: None,
-            id:         None
+            id:         None,
+            hyperlanes: None,
         };
-        let id_reg = Regex::new(r#"\t\tplanet=([0-9]+)|\t([0-9]+)=\{|\t\tcoordinate=\{|\t\tname="([0-9A-z'\s-]+)"|\t\tstar_class="([0-9_A-z'\s-]+)"|\t\t\t}|\t\t}|\t}|}"#).unwrap();
+        let id_reg = Regex::new(r#"\t\tplanet=([0-9]+)|\t([0-9]+)=\{|\t\tcoordinate=\{|\t\thyperlane=\{|\t\tname="([0-9A-z'\s-]+)"|\t\tstar_class="([0-9_A-z'\s-]+)"|\t\t\t}|\t\t}|\t}|}"#).unwrap();
 
 
         let mut temp;
@@ -318,6 +380,9 @@ impl System {
                 if Some("\t\tcoordinate={") ==   b.get(0).map_or(None, |m| Some(m.as_str())) {
                     ret.to_coordinate(data);
                 }
+                if Some("\t\thyperlane={") ==   b.get(0).map_or(None, |m| Some(m.as_str())) {
+                    ret.to_hyperlanes(data);
+                }
                 if let Some(c) = b.get(1).map_or(None, |m| Some(m.as_str().parse::<usize>().unwrap())) {
                     temp = ret.bodies.get_or_insert(Vec::new());
                     temp.push(c);
@@ -335,6 +400,23 @@ impl System {
 
         }
         unreachable!();
+    }
+    fn to_hyperlanes(&mut self, data: &mut impl Iterator<Item = String>) {
+        let id_reg = Regex::new(r#"to=([0-9]+)|^\t\t\}"#).unwrap();
+
+        let mut temp;
+        while let Some(a) = data.next() {
+            if let Some(b) = id_reg.captures(&a) {
+                if  Some("\t\t}") == b.get(0).map_or(None, |m| Some(m.as_str())) {
+                    break;
+                }
+                if let Some(xfir) = b.get(1).map_or(None, |m| Some(m.as_str().parse::<usize>().unwrap())) {
+                    temp = self.hyperlanes.get_or_insert(Vec::new());
+                    temp.push(xfir);
+                }
+            }
+
+        }
     }
     fn to_coordinate(&mut self, data: &mut impl Iterator<Item = String>) {
         let id_reg = Regex::new(r#"(\})|x=(-?[0-9.]+)|y=(-?[0-9.]+)"#).unwrap();
@@ -362,12 +444,13 @@ impl System {
 #[derive(Debug)]
 enum StarType {
     Placeholder,
-    UnInit
 }
 
 impl StarType {
     fn to_startype(inp: &str) -> StarType {
-        StarType::Placeholder
+        match inp {
+            _ => StarType::Placeholder
+        }
     }
 }
 
@@ -521,7 +604,7 @@ impl Bodies {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum BodyType {
     // Asteroid,
     // HabPlanet(HabPlanetType),
@@ -531,7 +614,9 @@ enum BodyType {
 
 impl BodyType {
     fn to_bodytype(inp: &str) -> BodyType {
-        BodyType::Placeholder
+        match inp {
+            _ => BodyType::Placeholder
+        }
     }
 }
 
@@ -602,7 +687,7 @@ enum Ethic {
     Authoritarian,
     Xenophile,
     Xenophobe,
-    Placeholder,
+    Gestalt,
 }
 
 impl Ethic {
@@ -651,14 +736,15 @@ impl Ethic {
                     "ethic_fanatic_authoritarian" => vec![Ethic::Authoritarian, Ethic::Authoritarian],
                     "ethic_fanatic_xenophile" =>    vec![Ethic::Xenophile, Ethic::Xenophile],
                     "ethic_fanatic_xenophobe" =>    vec![Ethic::Xenophobe, Ethic::Xenophobe],
-                    _ =>                    panic!("1: {}", inp),
+                    "ethic_gestalt_consciousness" => vec![Ethic::Gestalt],
+                    _ =>                    panic!("1a: {}", inp),
                 }
             } else {
-                panic!("2: {}", inp);
+                panic!("2a: {}", inp);
             }
         } else {
 
-            panic!("3: {}", inp);
+            panic!("3a: {}", inp);
         }
 
     }
@@ -708,43 +794,44 @@ impl Species {
 #[derive(Debug)]
 enum Employment {
     Placeholder,
-    UnInit
     // more
 }
 
 impl Employment {
     fn to_employment(inp: &str) -> Employment {
-        Employment::Placeholder
+        match inp {
+            _ => Employment::Placeholder
+        }
     }
 }
 
-#[derive(Debug)]
-enum HabPlanetType {
-    // Dry,
-    // Wet,
-    // Cold,
+// #[derive(Debug)]
+// enum HabPlanetType {
+//     // Dry,
+//     // Wet,
+//     // Cold,
 
-    // Ecumenopolis,
-    // Gaia,
-    // Tomb,
-    // Relic,
-    // Hive,
-    // Machine,
-    // Habitat,
-    // Ringworld,
+//     // Ecumenopolis,
+//     // Gaia,
+//     // Tomb,
+//     // Relic,
+//     // Hive,
+//     // Machine,
+//     // Habitat,
+//     // Ringworld,
 
-    // Tropical,
-    // Ocean,
-    // Continental,
-    // Desert,
-    // Savanna,
-    // Arid,
-    // Alpine,
-    // Arctic,
-    // Tundra,
+//     // Tropical,
+//     // Ocean,
+//     // Continental,
+//     // Desert,
+//     // Savanna,
+//     // Arid,
+//     // Alpine,
+//     // Arctic,
+//     // Tundra,
 
-    Placeholder
-}
+//     Placeholder
+// }
 
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -836,17 +923,19 @@ enum DepositType {
 
 impl DepositType {
     fn to_deposittype(inp: &str) -> DepositType {
-        DepositType::Placeholder
-    }
-}
-
-impl HabPlanetType {
-    fn new(inp: &str) -> Result<HabPlanetType, Box<dyn Error>> {
         match inp {
-            _ => todo!()
+            _ => DepositType::Placeholder
         }
     }
 }
+
+// impl HabPlanetType {
+//     fn new(inp: &str) -> Result<HabPlanetType, Box<dyn Error>> {
+//         match inp {
+//             _ => todo!()
+//         }
+//     }
+// }
 
 
 impl std::fmt::Debug for Empire {
@@ -964,7 +1053,7 @@ impl std::fmt::Debug for Bodies {
                     *temp.entry(i).or_insert(0) += 1;
                 }
                 for (key, val) in temp.iter() {
-                    writeln!(f, "\t\t{} {:?}", val, key);
+                    writeln!(f, "\t\t{} {:?}", val, key)?;
                 }
                 writeln!(f, "\t}}")?;
             }
